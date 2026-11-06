@@ -4,40 +4,58 @@ name: Rastreador de precios
 on:
   schedule:
     - cron: "0 12 * * *"   # todos los días 8:00 am Bolivia (12:00 UTC)
-  workflow_dispatch:         # ejecución manual (también la usa el comando /precios)
+  workflow_dispatch:         # ejecución manual (también la usan /precios y /historial)
+    inputs:
+      accion:
+        description: "Qué enviar"
+        type: choice
+        options:
+          - precios
+          - historial
+        default: precios
 
 permissions:
-  contents: write            # necesario para guardar precios_previos.json
+  contents: write            # necesario para guardar los archivos de datos
 
 concurrency:
-  group: precios             # evita que dos ejecuciones se pisen al guardar el archivo
+  group: precios             # evita que dos ejecuciones se pisen al guardar
   cancel-in-progress: false
 
 jobs:
   run:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - run: pip install requests beautifulsoup4
 
       - name: Ejecutar script
-        # Programada: avisa solo si hay cambios. Manual: siempre envía el comparativo.
-        run: python precios_farmacias.py ${{ github.event_name == 'workflow_dispatch' && '--test' || '' }}
+        # Programada: avisa solo si hay cambios.
+        # Manual "precios": envía siempre el comparativo.
+        # Manual "historial": envía el resumen del historial.
+        run: |
+          ARGS=""
+          if [ "$EVENTO" = "workflow_dispatch" ]; then
+            if [ "$ACCION" = "historial" ]; then ARGS="--historial"; else ARGS="--test"; fi
+          fi
+          python precios_farmacias.py $ARGS
         env:
+          EVENTO: ${{ github.event_name }}
+          ACCION: ${{ inputs.accion }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
-      - name: Guardar precios
+      - name: Guardar datos
         run: |
           git config user.name "price-bot"
           git config user.email "price-bot@users.noreply.github.com"
-          git add precios_previos.json
+          [ -f precios_previos.json ] && git add precios_previos.json || true
+          [ -f historial.json ] && git add historial.json || true
           if ! git diff --cached --quiet; then
-            git commit -m "actualiza precios"
+            git commit -m "actualiza datos"
             git push
           fi
