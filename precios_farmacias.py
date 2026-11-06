@@ -10,7 +10,8 @@ Variables de entorno (no escribas el token en el código):
 Uso normal:           python precios_farmacias.py
 Enviar comparativo
 aunque no haya
-cambios (prueba):     python precios_farmacias.py --test
+cambios (consulta
+manual / prueba):     python precios_farmacias.py --test
 
 Prueba local en Windows:
   set TELEGRAM_TOKEN=...
@@ -32,6 +33,16 @@ CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 PRODUCTO = "Acnotin 20 mg"
 MONEDA = "Bs"
 ZONA = timezone(timedelta(hours=-4))  # hora de Bolivia
+
+# Cantidad de cápsulas para el cálculo de compra (los precios se toman por cápsula)
+CAPSULAS = 30
+
+# Descuentos que NO aparecen en la web y se aplican en caja sobre el total de la factura.
+# dia: 0=lunes, 1=martes, 2=miércoles, 3=jueves, 4=viernes, 5=sábado, 6=domingo
+# Si la promoción termina, borra la entrada.
+DESCUENTOS = {
+    "Hipermaxi SD": {"dia": 3, "texto": "jueves", "pct": 10},
+}
 
 SITIOS = [
     {
@@ -95,7 +106,7 @@ def bs(valor):
     return f"{MONEDA} {valor:.2f}"
 
 
-def construir_mensaje(leidos, previos, cambios):
+def construir_mensaje(leidos, previos, cambios, manual=False):
     """
     leidos:  {nombre: precio actual o None si falló la lectura}
     previos: {nombre: último precio guardado}
@@ -114,13 +125,11 @@ def construir_mensaje(leidos, previos, cambios):
     # Ordenar de menor a mayor; sin dato al final
     filas.sort(key=lambda f: (f["precio"] is None, f["precio"] or 0))
 
-    con_precio = [f["precio"] for f in filas if f["precio"] is not None]
-    minimo = min(con_precio) if con_precio else None
-
     ahora = datetime.now(ZONA).strftime("%d/%m/%Y, %H:%M")
+    etiqueta = "Consulta manual" if manual else "Variación detectada"
     lineas = [
         f"<b>{html.escape(PRODUCTO)} · Comparativo de precios</b>",
-        f"<i>Variación detectada · {ahora} (hora de Bolivia)</i>",
+        f"<i>{etiqueta} · {ahora} (hora de Bolivia)</i>",
         "",
     ]
 
@@ -145,9 +154,36 @@ def construir_mensaje(leidos, previos, cambios):
             extra = "  <i>(último dato disponible)</i>" if f["desactualizado"] else ""
             lineas.append(f"•  {nombre}: {bs(p)}{extra}")
 
-    if minimo is not None:
-        mejores = [f["sitio"]["nombre"] for f in filas if f["precio"] == minimo]
-        lineas += ["", f"<b>Precio más bajo:</b> {html.escape(' / '.join(mejores))} ({bs(minimo)})"]
+    # Cálculo de compra (por cápsula x cantidad)
+    compras = {f["sitio"]["nombre"]: f["precio"] * CAPSULAS for f in filas if f["precio"] is not None}
+    if compras:
+        n_min = min(compras, key=compras.get)
+        p_unit = compras[n_min] / CAPSULAS
+        lineas += [
+            "",
+            f"<b>Compra de {CAPSULAS} cápsulas</b>",
+            f"Más económico: {html.escape(n_min)} · {bs(compras[n_min])}",
+            f"<i>({bs(p_unit)} x {CAPSULAS})</i>",
+        ]
+
+        # Descuentos por día: se muestran solo si dejarían a esa farmacia como la más barata
+        hoy = datetime.now(ZONA).weekday()
+        for n, d in DESCUENTOS.items():
+            base = compras.get(n)
+            if base is None:
+                continue
+            con_desc = base * (1 - d["pct"] / 100)
+            otros = [t for m, t in compras.items() if m != n]
+            if otros and con_desc > min(otros):
+                continue
+            ahorro = base - con_desc
+            vigencia = "vigente hoy" if hoy == d["dia"] else f"solo {d['texto']}"
+            lineas += [
+                "",
+                f"<b>{html.escape(n)} con {d['pct']}% de descuento</b> ({vigencia})",
+                f"Total: {bs(con_desc)} · ahorro de {bs(ahorro)}",
+                "<i>El descuento se aplica en caja; no figura en el sitio web.</i>",
+            ]
 
     return "\n".join(lineas)
 
@@ -194,4 +230,4 @@ if __name__ == "__main__":
     guardar_estado(actuales)
 
     if cambios or modo_prueba:
-        enviar(construir_mensaje(leidos, previos, cambios))
+        enviar(construir_mensaje(leidos, previos, cambios, manual=modo_prueba))
