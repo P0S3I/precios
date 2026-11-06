@@ -3,7 +3,7 @@ name: Rastreador de precios
 
 on:
   schedule:
-    - cron: "0 */2 * * *"   # cada 2 horas (hora UTC)
+    - cron: "0 12 * * *" 
   workflow_dispatch:         # permite lanzarlo a mano desde la pestaña Actions
 
 permissions:
