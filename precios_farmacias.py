@@ -1,24 +1,37 @@
 """
-Rastreador de precios -> Telegram, SOLO cuando cambia un precio
+Seguimiento de precios de farmacias -> Telegram
+Avisa SOLO cuando cambia algún precio, mostrando el comparativo completo.
 
 Instalación:  pip install requests beautifulsoup4
-Variables de entorno necesarias (NO las escribas en el código):
-  TELEGRAM_TOKEN    token de tu bot (BotFather)
-  TELEGRAM_CHAT_ID  tu chat id
+Variables de entorno (no escribas el token en el código):
+  TELEGRAM_TOKEN      token de tu bot (BotFather)
+  TELEGRAM_CHAT_ID    tu chat id
 
-Prueba local (Windows):   set TELEGRAM_TOKEN=...   y   set TELEGRAM_CHAT_ID=...
-Prueba local (Linux/Mac): export TELEGRAM_TOKEN=... y export TELEGRAM_CHAT_ID=...
-Luego:                    python precios_farmacias.py
+Uso normal:           python precios_farmacias.py
+Enviar comparativo
+aunque no haya
+cambios (prueba):     python precios_farmacias.py --test
+
+Prueba local en Windows:
+  set TELEGRAM_TOKEN=...
+  set TELEGRAM_CHAT_ID=...
 """
+import html
 import json
 import os
 import re
+import sys
+from datetime import datetime, timedelta, timezone
+
 import requests
 from bs4 import BeautifulSoup
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+PRODUCTO = "Acnotin 20 mg"
 MONEDA = "Bs"
+ZONA = timezone(timedelta(hours=-4))  # hora de Bolivia
 
 SITIOS = [
     {
@@ -41,6 +54,8 @@ SITIOS = [
 ESTADO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "precios_previos.json")
 HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"}
 
+
+# ---------- Lectura de precios ----------
 
 def obtener_precio(sitio):
     """Devuelve el precio como float, o None si falla."""
@@ -74,37 +89,109 @@ def guardar_estado(estado):
         json.dump(estado, f, ensure_ascii=False, indent=2)
 
 
+# ---------- Mensaje ----------
+
+def bs(valor):
+    return f"{MONEDA} {valor:.2f}"
+
+
+def construir_mensaje(leidos, previos, cambios):
+    """
+    leidos:  {nombre: precio actual o None si falló la lectura}
+    previos: {nombre: último precio guardado}
+    cambios: {nombre: precio anterior} solo de las farmacias que cambiaron
+    """
+    filas = []
+    for s in SITIOS:
+        n = s["nombre"]
+        actual = leidos.get(n)
+        desactualizado = False
+        if actual is None and previos.get(n) is not None:
+            actual = previos[n]
+            desactualizado = True
+        filas.append({"sitio": s, "precio": actual, "desactualizado": desactualizado})
+
+    # Ordenar de menor a mayor; sin dato al final
+    filas.sort(key=lambda f: (f["precio"] is None, f["precio"] or 0))
+
+    con_precio = [f["precio"] for f in filas if f["precio"] is not None]
+    minimo = min(con_precio) if con_precio else None
+
+    ahora = datetime.now(ZONA).strftime("%d/%m/%Y, %H:%M")
+    lineas = [
+        f"<b>{html.escape(PRODUCTO)} · Comparativo de precios</b>",
+        f"<i>Variación detectada · {ahora} (hora de Bolivia)</i>",
+        "",
+    ]
+
+    for f in filas:
+        s, p = f["sitio"], f["precio"]
+        nombre = f'<a href="{html.escape(s["url"], quote=True)}">{html.escape(s["nombre"])}</a>'
+
+        if p is None:
+            lineas.append(f"•  {nombre}: sin datos")
+            continue
+
+        if s["nombre"] in cambios:
+            antes = cambios[s["nombre"]]
+            dif = p - antes
+            pct = dif / antes * 100 if antes else 0
+            flecha = "▲" if dif > 0 else "▼"
+            lineas.append(f"{flecha}  <b>{nombre}: {bs(p)}</b>")
+            lineas.append(
+                f"      Anterior: {bs(antes)}  ({dif:+.2f} {MONEDA} / {pct:+.1f}%)"
+            )
+        else:
+            extra = "  <i>(último dato disponible)</i>" if f["desactualizado"] else ""
+            lineas.append(f"•  {nombre}: {bs(p)}{extra}")
+
+    if minimo is not None:
+        mejores = [f["sitio"]["nombre"] for f in filas if f["precio"] == minimo]
+        lineas += ["", f"<b>Precio más bajo:</b> {html.escape(' / '.join(mejores))} ({bs(minimo)})"]
+
+    return "\n".join(lineas)
+
+
 def enviar(texto):
     r = requests.post(
         f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-        data={"chat_id": CHAT_ID, "text": texto, "disable_web_page_preview": True},
+        data={
+            "chat_id": CHAT_ID,
+            "text": texto,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        },
         timeout=20,
     )
     if not r.ok:
         print("Error enviando a Telegram:", r.text)
 
 
+# ---------- Programa principal ----------
+
 if __name__ == "__main__":
+    modo_prueba = "--test" in sys.argv
+
     previos = cargar_estado()
     actuales = dict(previos)
-    avisos = []
+    leidos = {}
+    cambios = {}
 
     for s in SITIOS:
-        nombre = s["nombre"]
+        n = s["nombre"]
         precio = obtener_precio(s)
-        print(f"{nombre}: {precio}")
+        leidos[n] = precio
+        print(f"{n}: {precio}")
         if precio is None:
             continue  # fallo puntual: se conserva el precio anterior
-        antes = previos.get(nombre)
+        antes = previos.get(n)
         if antes is None:
-            actuales[nombre] = precio  # primera lectura: solo se guarda
+            actuales[n] = precio  # primera lectura: solo se guarda
         elif precio != antes:
-            flecha = "⬇️" if precio < antes else "⬆️"
-            avisos.append(
-                f"{flecha} {nombre}: {antes:.2f} {MONEDA} → {precio:.2f} {MONEDA}\n{s['url']}"
-            )
-            actuales[nombre] = precio
+            cambios[n] = antes
+            actuales[n] = precio
 
     guardar_estado(actuales)
-    if avisos:
-        enviar("Cambio de precios:\n\n" + "\n\n".join(avisos))
+
+    if cambios or modo_prueba:
+        enviar(construir_mensaje(leidos, previos, cambios))
