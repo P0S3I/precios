@@ -1,0 +1,38 @@
+# Guárdalo en tu repo como: .github/workflows/precios.yml
+name: Rastreador de precios
+
+on:
+  schedule:
+    - cron: "0 */2 * * *"   # cada 2 horas (hora UTC)
+  workflow_dispatch:         # permite lanzarlo a mano desde la pestaña Actions
+
+permissions:
+  contents: write            # necesario para guardar precios_previos.json
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install requests beautifulsoup4
+
+      - name: Ejecutar script
+        run: python precios_farmacias.py
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      - name: Guardar precios
+        run: |
+          git config user.name "price-bot"
+          git config user.email "price-bot@users.noreply.github.com"
+          git add precios_previos.json
+          if ! git diff --cached --quiet; then
+            git commit -m "actualiza precios"
+            git push
+          fi
