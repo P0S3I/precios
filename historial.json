@@ -1,0 +1,14 @@
+{
+  "dias": {
+    "2026-11-19": {
+      "Farmacorp": 20.27,
+      "Hipermaxi SD": 19.7
+    }
+  },
+  "fallos": {
+    "Farmacia Chavez": {
+      "alertado": false,
+      "desde": "2026-11-19"
+    }
+  }
+}
